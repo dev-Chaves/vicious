@@ -323,9 +323,13 @@ def normalize_for_speech(text: str) -> str:
 
 def ensure_sentence(text: str) -> str:
     text = text.strip()
-    if text and text[-1] not in ".!?;:":
-        return text + "."
-    return text
+    if not text:
+        return text
+    # Trailing quotes/closure belong to the sentence: "ops." already ends it.
+    core = text.rstrip("\"'’”)]")
+    if core and core[-1] in ".!?;:":
+        return text
+    return text + "."
 
 
 def _expand_abbreviations(text: str) -> str:

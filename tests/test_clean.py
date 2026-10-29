@@ -204,4 +204,6 @@ def test_citations_are_dropped():
 def test_ensure_sentence():
     assert ensure_sentence("hello") == "hello."
     assert ensure_sentence("hello!") == "hello!"
+    assert ensure_sentence('the "ops."') == 'the "ops."'
+    assert ensure_sentence("(see above)") == "(see above)."
     assert ensure_sentence("") == ""
