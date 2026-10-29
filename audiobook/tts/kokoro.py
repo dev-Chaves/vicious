@@ -34,6 +34,8 @@ class KokoroSettings:
     speed: float = 1.0
     lang_code: str = "a"
     edge_pad_ms: int = 120
+    part_pad_ms: int = 60
+    part_gap_ms: int = 400
     silence_floor: float = 0.005
 
     def as_dict(self) -> dict[str, object]:
@@ -44,6 +46,8 @@ class KokoroSettings:
             "speed": self.speed,
             "lang_code": self.lang_code,
             "edge_pad_ms": self.edge_pad_ms,
+            "part_pad_ms": self.part_pad_ms,
+            "part_gap_ms": self.part_gap_ms,
             "silence_floor": self.silence_floor,
         }
 
@@ -140,6 +144,13 @@ class KokoroEngine:
 
         samples = np.concatenate([np.asarray(part.audio) for part in parts])
         sample_rate = int(parts[0].sample_rate or self.sample_rate)
+        samples = join_parts(
+            [np.asarray(part.audio) for part in parts],
+            sample_rate,
+            part_pad_ms=self.settings.part_pad_ms,
+            part_gap_ms=self.settings.part_gap_ms,
+            floor=self.settings.silence_floor,
+        )
         samples = trim_edges(
             samples,
             sample_rate,
@@ -177,6 +188,32 @@ class KokoroEngine:
                 },
             )
         return synthesis
+
+
+def join_parts(
+    parts: list[np.ndarray],
+    sample_rate: int,
+    part_pad_ms: int = 60,
+    part_gap_ms: int = 400,
+    floor: float = 0.005,
+) -> np.ndarray:
+    """Join Kokoro's internal parts with a short, controlled sentence pause.
+
+    Kokoro splits anything longer than ~510 phonemes into parts at punctuation,
+    and pads *each* part with ~300 ms of lead and ~500 ms of trail. Concatenated
+    as-is, a paragraph gains almost a second of dead air between sentences. Trim
+    every part and insert one explicit gap instead.
+    """
+    if len(parts) == 1:
+        return parts[0]
+    gap = np.zeros(int(sample_rate * part_gap_ms / 1000), dtype=parts[0].dtype)
+    pieces: list[np.ndarray] = []
+    for part in parts:
+        pieces.append(
+            trim_edges(part, sample_rate, pad_ms=part_pad_ms, floor=floor)
+        )
+        pieces.append(gap)
+    return np.concatenate(pieces[:-1])
 
 
 def trim_edges(
