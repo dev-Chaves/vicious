@@ -92,14 +92,15 @@ def speak(
         Path(".cache/tts"), "--cache", help="Audio cache directory."
     ),
     engine_name: str = typer.Option(
-        "lfm3", "--engine", help="Speech engine: lfm3 or kokoro."
+        "kokoro", "--engine", help="Speech engine: kokoro or lfm3."
     ),
     model: str = typer.Option(DEFAULT_MODEL, help="LFM3 MLX checkpoint."),
     kokoro_model: str = typer.Option(
         DEFAULT_KOKORO_MODEL, help="Kokoro MLX checkpoint."
     ),
     voice: str = typer.Option(
-        "", help="LFM3: female/male. Kokoro: af_heart, af_bella, am_michael..."
+        "",
+        help="Kokoro pack (af_heart, af_bella, am_michael) or female/male for LFM3.",
     ),
     speed: float = typer.Option(
         1.0, "--speed", min=0.5, max=2.0, help="Kokoro speaking rate."
@@ -114,6 +115,17 @@ def speak(
         0.45, min=0.0, help="Silence between segments."
     ),
     bitrate: str = typer.Option("96k", help="MP3 bitrate."),
+    normalize: bool = typer.Option(
+        True,
+        "--normalize/--no-normalize",
+        help="Bring the chapter to a fixed loudness with ffmpeg loudnorm.",
+    ),
+    target_lufs: float = typer.Option(
+        -19.0, "--target-lufs", help="Integrated loudness target (LUFS)."
+    ),
+    true_peak: float = typer.Option(
+        -2.0, "--true-peak", help="True peak ceiling (dBTP)."
+    ),
     max_chars: int = typer.Option(600, min=100, help="Chunk size limit."),
     min_chars: int = typer.Option(120, min=0, help="Merge shorter trailing chunks."),
     refresh: bool = typer.Option(
@@ -161,12 +173,23 @@ def speak(
     work_dir.mkdir(parents=True, exist_ok=True)
     cache = None if no_cache else AudioCache(cache_dir)
     if engine_name == "kokoro":
-        from .tts.kokoro import KokoroEngine
+        from .tts.kokoro import (
+            DEFAULT_VOICE,
+            KokoroEngine,
+            lang_code_for,
+            resolve_voice,
+        )
 
+        try:
+            kokoro_voice = resolve_voice(voice or DEFAULT_VOICE)
+        except ValueError as error:
+            typer.echo(f"error: {error}", err=True)
+            raise typer.Exit(code=1) from error
         kokoro_settings = KokoroSettings(
             model_id=kokoro_model,
-            voice=voice or "af_heart",
+            voice=kokoro_voice,
             speed=speed,
+            lang_code=lang_code_for(kokoro_voice),
         )
         engine = KokoroEngine(kokoro_settings, cache=cache, refresh=refresh)
         engine_label = f"kokoro {kokoro_settings.voice} at {speed:.2f}x"
@@ -230,6 +253,8 @@ def speak(
             title=loaded.source.title,
             album=loaded.source.book or None,
             bitrate=bitrate,
+            target_lufs=target_lufs if normalize else None,
+            true_peak=true_peak,
         )
     except (RuntimeError, ValueError) as error:
         typer.echo(f"error while assembling: {error}", err=True)
@@ -267,7 +292,17 @@ def _report(loaded: Script, results, assembly, load_peak: float) -> None:
         typer.echo(
             f"  generated   {_clock(generated)} this run at {speed:.2f}x real time"
         )
-    typer.echo(f"  peak memory {peak:.2f} GB (model load {load_peak:.2f} GB)")
+    if peak > 0:
+        typer.echo(f"  peak memory {peak:.2f} GB (model load {load_peak:.2f} GB)")
+    else:
+        typer.echo("  peak memory not measured (every chunk was cached)")
+    if assembly.loudness_lufs is not None:
+        peak_text = (
+            f", peak {assembly.true_peak_dbtp:.1f} dBTP"
+            if assembly.true_peak_dbtp is not None
+            else ""
+        )
+        typer.echo(f"  loudness    {assembly.loudness_lufs:.1f} LUFS{peak_text}")
     typer.echo(f"  file        {assembly.mp3}")
     if warnings:
         typer.echo(f"  warnings    {len(warnings)}")

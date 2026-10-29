@@ -5,7 +5,30 @@ import os
 import numpy as np
 import pytest
 
-from audiobook.tts.kokoro import KokoroSettings, join_parts, trim_edges
+from audiobook.tts.kokoro import (
+    KokoroSettings,
+    join_parts,
+    lang_code_for,
+    resolve_voice,
+    trim_edges,
+)
+
+
+def test_voice_aliases_and_language_inference():
+    assert resolve_voice("female") == "af_heart"
+    assert resolve_voice("Male") == "am_michael"
+    assert resolve_voice("af_bella") == "af_bella"
+    assert lang_code_for("af_heart") == "a"
+    assert lang_code_for("bf_emma") == "b"
+    with pytest.raises(ValueError):
+        resolve_voice("karen")
+
+
+def test_engine_resolves_a_friendly_voice_name():
+    from audiobook.tts.kokoro import KokoroEngine
+
+    engine = KokoroEngine(KokoroSettings(voice="female"), cache=None)
+    assert engine.settings.voice == "af_heart"
 
 
 def test_fingerprint_tracks_voice_and_speed():

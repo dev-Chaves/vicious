@@ -35,3 +35,36 @@ def test_assemble_mp3(tmp_path):
     assert out.stat().st_size > 0
     assert result.duration_s == pytest.approx(1.2)
     assert result.size_bytes == out.stat().st_size
+
+
+def _tone(path, seconds=6.0, amplitude=0.05, rate=24_000):
+    t = np.arange(int(rate * seconds)) / rate
+    samples = amplitude * np.sin(2 * np.pi * 220 * t)
+    return write_pcm16(path, samples.astype(np.float32), rate)
+
+
+@requires_ffmpeg
+def test_assemble_normalises_loudness(tmp_path):
+    source = _tone(tmp_path / "tone.wav")
+    result = assemble_mp3(
+        [source],
+        tmp_path / "tone.mp3",
+        gaps=0,
+        target_lufs=-19.0,
+    )
+    assert result.loudness_lufs == pytest.approx(-19.0, abs=1.0)
+    assert result.true_peak_dbtp is not None
+    assert result.true_peak_dbtp <= -1.5
+
+
+@requires_ffmpeg
+def test_assemble_can_skip_normalisation(tmp_path):
+    source = _tone(tmp_path / "tone.wav")
+    result = assemble_mp3(
+        [source],
+        tmp_path / "tone.mp3",
+        gaps=0,
+        target_lufs=None,
+    )
+    assert result.loudness_lufs is None
+    assert result.true_peak_dbtp is None

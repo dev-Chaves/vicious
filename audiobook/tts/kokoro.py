@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +23,45 @@ from .cache import AudioCache
 
 DEFAULT_KOKORO_MODEL = "mlx-community/Kokoro-82M-bf16"
 DEFAULT_VOICE = "af_heart"
+
+# Friendly aliases so the LFM3 vocabulary keeps working with Kokoro. The first
+# letter of a Kokoro voice pack is its language: af_/am_ American English,
+# bf_/bm_ British, and so on.
+VOICE_ALIASES = {
+    "female": "af_heart",
+    "woman": "af_heart",
+    "male": "am_michael",
+    "man": "am_michael",
+}
+LANGUAGE_CODES = {
+    "a": "American English",
+    "b": "British English",
+    "e": "Spanish",
+    "f": "French",
+    "h": "Hindi",
+    "i": "Italian",
+    "j": "Japanese",
+    "p": "Portuguese",
+    "z": "Chinese",
+}
+
+
+def resolve_voice(voice: str) -> str:
+    """Map a friendly name to a Kokoro voice pack and reject typos early."""
+    name = (voice or DEFAULT_VOICE).strip()
+    resolved = VOICE_ALIASES.get(name.lower(), name)
+    language, _, rest = resolved.partition("_")
+    if len(language) != 2 or language[0] not in LANGUAGE_CODES or not rest:
+        raise ValueError(
+            f"unknown Kokoro voice {voice!r}; use a pack such as "
+            "af_heart, af_bella, am_michael or bf_emma"
+        )
+    return resolved
+
+
+def lang_code_for(voice: str) -> str:
+    """Return the Kokoro language code implied by a voice pack name."""
+    return resolve_voice(voice)[0]
 
 
 @dataclass(frozen=True)
@@ -66,6 +105,9 @@ class KokoroEngine:
         refresh: bool = False,
     ):
         self.settings = settings or KokoroSettings()
+        voice = resolve_voice(self.settings.voice)
+        if voice != self.settings.voice:
+            self.settings = replace(self.settings, voice=voice)
         self.cache = cache
         self.refresh = refresh
         self.sample_rate = 24_000
