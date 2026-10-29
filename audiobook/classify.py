@@ -196,6 +196,8 @@ def _attach_figure_labels(items: list[ClassifiedItem]) -> list[ClassifiedItem]:
 
         if item.type is not SegmentType.CAPTION:
             pending = []
+        elif not (item.label or "").startswith("Figure"):
+            pending = []
         result.append(item)
 
     return result
