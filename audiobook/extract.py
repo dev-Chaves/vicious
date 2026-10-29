@@ -258,12 +258,31 @@ def find_chapter(doc: Document, number: int) -> ChapterRange:
 def extract_chapter(path: str | Path, number: int) -> tuple[Document, Chapter]:
     doc = open_document(path)
     chapter_range = find_chapter(doc, number)
+    return doc, extract_chapter_pages(doc.path, chapter_range)
+
+
+def extract_chapter_pages(path: str | Path, chapter_range: ChapterRange) -> Chapter:
+    """Extract one chapter's pages from a PDF that is opened per chapter.
+
+    A book run extracts 34 chapters in a row; keeping a MuPDF handle open for
+    the whole run buys nothing and risks holding file locks, while re-reading
+    the document is cheap (~5 ms).
+    """
     pages = []
-    with pymupdf.open(doc.path) as pdf:
+    with pymupdf.open(path) as pdf:
         for page_index in range(chapter_range.first_page - 1, chapter_range.last_page):
-            pdf_page = pdf[page_index]
-            pages.append(_extract_page(pdf_page))
-    return doc, Chapter(range=chapter_range, pages=tuple(pages))
+            pages.append(_extract_page(pdf[page_index]))
+    return Chapter(range=chapter_range, pages=tuple(pages))
+
+
+def chapter_numbers(doc: Document) -> list[int]:
+    """Chapter numbers available in the native TOC, in book order."""
+    numbers: list[int] = []
+    for entry in doc.toc:
+        match = _CHAPTER_RE.match(entry.title)
+        if entry.level == 2 and match:
+            numbers.append(int(match.group(1)))
+    return numbers
 
 
 def _extract_page(page: pymupdf.Page) -> Page:

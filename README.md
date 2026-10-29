@@ -58,6 +58,15 @@ uv run python -m audiobook script \
 uv run python -m audiobook speak build/ch01/script.json --out build/ch01/ch01.mp3
 ```
 
+Or generate a whole book in one run, resuming when interrupted:
+
+```bash
+uv run python -m audiobook book "ebook-pdf/....pdf" --out build
+```
+
+`book` writes `build/chNN/script.json`, `build/chNN/chNN.mp3`, a manifest at
+`build/book.json` and a single `build/book.mp3`.
+
 `uv run audiobook ...` is equivalent once the environment is synced.
 
 ### Pass 1: `script`
@@ -77,6 +86,7 @@ audiobook speak SCRIPT [--out FILE] [--engine kokoro|lfm3] [--voice ...] [--limi
                         [--start N] [--cache DIR] [--refresh] [--no-cache] [--work DIR]
                         [--bitrate 96k] [--gap-within 0.18] [--gap-between 0.45]
                         [--target-lufs -19.0] [--true-peak -2.0] [--no-normalize]
+                        [--loudness-passes 1]
 ```
 
 Chunks are synthesized one at a time, written as 24 kHz mono PCM WAVs, cached,
@@ -92,6 +102,8 @@ Useful options:
   `female`/`male`.
 - `--speed 0.95` — Kokoro speaking rate (LFM3 ignores it).
 - `--no-normalize` — skip loudness normalisation and keep the engine's level.
+- `--loudness-passes 2` — measure first, then apply a linear gain. Slower
+  (~37 s per chapter instead of ~21 s) and only worth it for archival copies.
 - `--limit 3` — smoke-test the first three chunks, then inspect the MP3.
 - `--start 40 --limit 5` — regenerate a specific region.
 - `--refresh` — ignore cached audio (after changing the voice, for example).
@@ -100,6 +112,35 @@ Useful options:
 
 Chunks are cached by a hash of model, sampling settings, max length and exact
 text. Editing a segment in `script.json` invalidates only the affected chunks.
+Tuning the voice or the chunker leaves old entries behind; prune them with:
+
+```bash
+uv run python -m audiobook cache gc -s build/ch*/script.json --dry-run
+uv run python -m audiobook cache gc -s build/ch*/script.json
+```
+
+### Whole book: `book`
+
+```text
+audiobook book PDF [--chapters all|1-34|2,4,6-8] [--out build] [--engine kokoro]
+                   [--force] [--refresh] [--cache DIR] [--no-cache]
+                   [--normalize/--no-normalize] [--loudness-passes 1|2]
+```
+
+One process loads the PDF once, hashes it once and loads the model once for
+every chapter. For each chapter it:
+
+1. rebuilds `script.json` only when the text changed (atomic write);
+2. skips the chapter when `chNN.mp3` exists and the script is unchanged;
+3. otherwise chunks, synthesises, normalises and encodes;
+
+and after each chapter it rewrites `build/book.json` atomically, so an
+interrupted run resumes with the same command. The manifest records status,
+pages, chunks, duration, loudness, peak memory and warning count per chapter.
+
+At the end the finished chapters are concatenated with `-c copy` into
+`build/book.mp3` (no re-encode). MP3 chapter markers and m4b output are still
+out of scope.
 
 ## `script.json`
 
@@ -303,17 +344,17 @@ Chunk WAVs are streamed into one WAV with 0.18 s of silence inside a segment
 and 0.45 s between segments, then normalised and encoded with ffmpeg:
 
 ```text
-loudnorm:   I=-19 LUFS, TP=-2 dBTP, LRA=11 (two passes)
+loudnorm:   I=-19 LUFS, TP=-2 dBTP, LRA=11 (one pass by default)
 libmp3lame: 96 kbps, 24 kHz, mono, ID3v2.3 (title/chapter, album/book)
 ```
 
-`loudnorm` runs twice: the first pass measures the programme, the second applies
-a linear gain with a true-peak ceiling, falling back to dynamic mode when a
-linear gain would clip. The ceiling is -2 dBTP rather than the usual -1.5
-because MP3 encoding overshoots sample peaks by about half a dB; on chapter 1
-the encoded files measure -19.4 LUFS with peaks of -2.2 dBTP (Kokoro) and
--1.3 dBTP (LFM3). Without it, Kokoro sat 4.7 dB lower and LFM3 clipped at
-+2.7 dBTP. `--no-normalize` keeps the engine's own level.
+By default `loudnorm` runs once and adapts as it goes (~21 s for a 26 min
+chapter). `--loudness-passes 2` measures first and then applies a linear gain
+with a true-peak ceiling (~37 s), which is exact but rarely needed. The ceiling
+is -2 dBTP rather than the usual -1.5 because MP3 encoding overshoots sample
+peaks by about half a dB; the finished chapters measure -19.4 LUFS with peaks
+of -2.2 dBTP (Kokoro) and -1.3 dBTP (LFM3). Without it, Kokoro sat 4.7 dB lower
+and LFM3 clipped at +2.7 dBTP. `--no-normalize` keeps the engine's own level.
 
 The chapter MP3 and the chunk WAVs stay next to each other in `build/`.
 
@@ -356,11 +397,14 @@ lost a whole clause, Kokoro's worst dropped a possessive.
 ## Tests
 
 ```bash
-uv run pytest                 # unit + integration (skips if the PDF is absent)
+uv run pytest                       # unit + integration (skips if the PDF is absent)
 uv run pytest -m "not integration"
 RUN_MLX=1 uv run pytest -m slow     # loads LFM3
 RUN_KOKORO=1 uv run pytest -m slow  # loads Kokoro
 ```
+
+The book runner and the pass-2 pipeline are tested with a stub engine, so the
+suite never loads a model.
 
 The sample PDF is not committed; integration tests are skipped when
 `ebook-pdf/` is empty.

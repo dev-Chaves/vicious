@@ -41,6 +41,7 @@ def assemble_mp3(
     target_lufs: float | None = DEFAULT_TARGET_LUFS,
     true_peak: float = DEFAULT_TRUE_PEAK,
     loudness_range: float = DEFAULT_LOUDNESS_RANGE,
+    loudness_passes: int = 1,
 ) -> Assembly:
     """Concatenate WAVs, normalise loudness and encode a mono MP3.
 
@@ -49,12 +50,15 @@ def assemble_mp3(
 
     ``target_lufs=None`` skips normalisation. The default ceiling is -2 dBTP
     rather than the usual -1.5, because MP3 encoding overshoots the sample
-    peaks by roughly half a dB. Otherwise ffmpeg's ``loudnorm`` runs twice:
-    once to measure the programme, then once to apply a linear gain with a
-    true-peak ceiling, falling back to dynamic mode when a linear gain would
-    clip. Engines produce very different levels (LFM3 peaks above 0 dBFS,
-    Kokoro sits 5 dB lower), and the chapter should not depend on that.
+    peaks by roughly half a dB. With ``loudness_passes=1`` ffmpeg's
+    ``loudnorm`` adapts as it goes (one decode, ~21 s for a 26 min chapter);
+    with 2 it measures first and then applies a linear gain with a true-peak
+    ceiling (two decodes, ~37 s). Engines produce very different levels (LFM3
+    peaks above 0 dBFS, Kokoro sits 5 dB lower), and the chapter should not
+    depend on that.
     """
+    if loudness_passes not in (1, 2):
+        raise ValueError("loudness_passes must be 1 or 2")
     if not wav_paths:
         raise ValueError("no audio to assemble")
     mp3_path = Path(mp3_path)
@@ -71,50 +75,66 @@ def assemble_mp3(
     try:
         duration = concat_wavs(wav_paths, combined, gaps)
         measured = None
-        if target_lufs is not None:
+        if target_lufs is not None and loudness_passes == 2:
             measured = _measure(
                 ffmpeg, combined, target_lufs, true_peak, loudness_range
             )
 
-        command = [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "info" if measured else "error",
-            "-y",
-            "-i",
-            str(combined),
-        ]
-        if measured is not None:
-            command += [
-                "-af",
-                _loudnorm_filter(target_lufs, true_peak, loudness_range, measured),
+        audio_filter = None
+        if target_lufs is not None:
+            if measured is not None:
+                audio_filter = _loudnorm_filter(
+                    target_lufs, true_peak, loudness_range, measured
+                )
+            else:
+                audio_filter = (
+                    f"loudnorm=I={target_lufs}:TP={true_peak}"
+                    f":LRA={loudness_range}:print_format=json"
+                )
+
+        def encode(apply_filter: bool) -> subprocess.CompletedProcess[str]:
+            command = [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "info" if apply_filter else "error",
+                "-y",
+                "-i",
+                str(combined),
             ]
-        command += [
-            "-codec:a",
-            "libmp3lame",
-            "-b:a",
-            bitrate,
-            "-ar",
-            str(sample_rate),
-            "-ac",
-            "1",
-        ]
-        if title:
-            command += ["-metadata", f"title={title}"]
-        if album:
-            command += ["-metadata", f"album={album}"]
-        if artist:
-            command += ["-metadata", f"artist={artist}"]
-        command += ["-id3v2_version", "3", str(mp3_path)]
-        completed = subprocess.run(
-            command, capture_output=True, text=True, check=False
-        )
+            if apply_filter and audio_filter is not None:
+                command += ["-af", audio_filter]
+            command += [
+                "-codec:a",
+                "libmp3lame",
+                "-b:a",
+                bitrate,
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+            ]
+            if title:
+                command += ["-metadata", f"title={title}"]
+            if album:
+                command += ["-metadata", f"album={album}"]
+            if artist:
+                command += ["-metadata", f"artist={artist}"]
+            command += ["-id3v2_version", "3", str(mp3_path)]
+            return subprocess.run(
+                command, capture_output=True, text=True, check=False
+            )
+
+        completed = encode(audio_filter is not None)
+        # loudnorm aborts on digital silence (division by zero inside
+        # libebur128). Fall back to a plain encode rather than failing a run.
+        if completed.returncode != 0 and audio_filter is not None:
+            completed = encode(False)
         if completed.returncode != 0:
             raise RuntimeError(
                 f"ffmpeg failed ({completed.returncode}): {completed.stderr.strip()}"
             )
-        if measured is not None:
+        if audio_filter is not None:
             applied = _parse_loudnorm(completed.stderr)
             if applied:
                 loudness = _as_float(applied.get("output_i"))

@@ -104,3 +104,66 @@ def test_cache_miss_when_wav_is_missing(tmp_path):
     cache.meta_path(key).parent.mkdir(parents=True)
     cache.meta_path(key).write_text("{}")
     assert cache.lookup(key) is None
+
+
+def test_prune_keeps_only_live_keys(tmp_path):
+    cache = AudioCache(tmp_path / "cache")
+    wav = write_pcm16(tmp_path / "source.wav", _tone(0.1), 24_000)
+    live = cache.key("fingerprint", "keep me", 0)
+    stale = cache.key("fingerprint", "drop me", 0)
+    for key, text in ((live, "keep me"), (stale, "drop me")):
+        cache.store(key, wav, text=text, settings={}, stats={"duration_s": 0.1})
+
+    result = cache.prune({live})
+
+    assert result.kept == 1
+    assert result.removed == 1
+    assert result.freed_bytes > 0
+    assert cache.lookup(live) is not None
+    assert cache.lookup(stale) is None
+    assert cache.meta_path(stale).exists() is False
+
+
+def test_prune_dry_run_changes_nothing(tmp_path):
+    cache = AudioCache(tmp_path / "cache")
+    wav = write_pcm16(tmp_path / "source.wav", _tone(0.1), 24_000)
+    stale = cache.key("fingerprint", "drop me", 0)
+    cache.store(stale, wav, text="drop me", settings={}, stats={})
+
+    result = cache.prune(set(), dry_run=True)
+
+    assert result.removed == 1
+    assert result.freed_bytes > 0
+    assert cache.lookup(stale) is not None
+
+
+def test_live_cache_keys_match_the_engine_lookup(tmp_path):
+    from audiobook.pipeline import live_cache_keys
+    from audiobook.schema import Script, Segment, Source
+    from audiobook.tts.kokoro import KokoroSettings
+    from audiobook.types import Origin, SegmentType
+
+    cache = AudioCache(tmp_path / "cache")
+    script = Script(
+        source=Source(
+            pdf="book.pdf",
+            sha256="0" * 64,
+            chapter=1,
+            title="Chapter 1. Test",
+            first_page=1,
+            last_page=1,
+        ),
+        segments=[
+            Segment(
+                id="ch01-0001",
+                type=SegmentType.PROSE,
+                text_original="Hello there.",
+                text_narrated="Hello there.",
+                origin=Origin.RULE,
+                page=1,
+            )
+        ],
+    )
+    fingerprint = KokoroSettings().fingerprint()
+    keys = live_cache_keys([script], cache, fingerprint, "kokoro")
+    assert keys == {cache.key(fingerprint, "Hello there.", 0)}
