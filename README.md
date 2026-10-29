@@ -37,6 +37,10 @@ brew install ffmpeg     # if you do not have it
 The first synthesis downloads `LiquidAI/LFM3-Audio-2B-MLX-8bit` from Hugging
 Face (~3 GB) into `~/.cache/huggingface`. After that, everything is offline.
 
+The Kokoro engine adds `misaki[en]` (G2P, pulls PyTorch and spaCy) and downloads
+`mlx-community/Kokoro-82M-bf16` (~390 MB) plus a spaCy model on first use. Both
+are only needed for `--engine kokoro`.
+
 ## Quick start
 
 ```bash
@@ -66,8 +70,8 @@ summary (segments, narrated words, estimated duration).
 ### Pass 2: `speak`
 
 ```text
-audiobook speak SCRIPT [--out FILE] [--voice female|male] [--limit N] [--start N]
-                        [--cache DIR] [--refresh] [--no-cache] [--work DIR]
+audiobook speak SCRIPT [--out FILE] [--engine lfm3|kokoro] [--voice ...] [--limit N]
+                        [--start N] [--cache DIR] [--refresh] [--no-cache] [--work DIR]
                         [--bitrate 96k] [--gap-within 0.18] [--gap-between 0.45]
 ```
 
@@ -78,6 +82,10 @@ quality warnings).
 
 Useful options:
 
+- `--engine kokoro` — use Kokoro-82M instead of LFM3 (see below).
+- `--voice` — LFM3 takes `female`/`male`; Kokoro takes a voice pack such as
+  `af_heart`, `af_bella`, `af_nicole`, `am_michael`.
+- `--speed 0.95` — Kokoro speaking rate (LFM3 ignores it).
 - `--limit 3` — smoke-test the first three chunks, then inspect the MP3.
 - `--start 40 --limit 5` — regenerate a specific region.
 - `--refresh` — ignore cached audio (after changing the voice, for example).
@@ -250,6 +258,34 @@ Output is 24 kHz mono, written as 16-bit PCM WAV.
 > Sampling values from the LFM3-VL card (`temperature=0.1`, `top_p`, ...) are
 > for text generation and must **not** be used here.
 
+### Kokoro-82M (alternative engine)
+
+`--engine kokoro` replaces only the voice: same `script.json`, chunking, cache
+and assembly. It runs `mlx_audio.tts` with
+`mlx-community/Kokoro-82M-bf16` and takes phonemes from `misaki[en]`, which is
+declared as a dependency and bundles its own espeak loader.
+
+```bash
+uv run python -m audiobook speak build/ch01/script.json \
+  --engine kokoro --voice af_heart --speed 0.95 \
+  --out build/ch01/ch01-kokoro.mp3 --cache .cache/kokoro-tts
+```
+
+What is different from LFM3:
+
+- **Deterministic.** No temperature, top-k or repetition penalty; `--speed` is
+  the only delivery knob, so there is no sampling drift or repetition risk.
+- **It reads phonemes.** The G2P stage expands numbers and decides acronyms:
+  `S R E`, `SRE` and `S.R.E.` all become "ess ar ee", `UNIX` becomes "yoo-niks",
+  `NASA` becomes "nasa", `SQL` becomes "sequel", `96 percent` becomes "ninety
+  six percent". `clean.py` needs no engine-specific rules.
+- **It pads every generation.** Kokoro adds ~300 ms of lead and ~500 ms of trail
+  silence, and anything over ~510 phonemes is split internally at punctuation,
+  with each part padded again. `audiobook/tts/kokoro.py` trims each part to
+  60 ms, joins parts with a 400 ms pause, then trims the outer edges to 120 ms,
+  so the assembler stays in charge of pacing instead of stacking dead air.
+- **Cache key** includes voice, speed, language and the trimming settings.
+
 ### 7. Assemble (`audiobook/assemble.py`)
 
 Chunk WAVs are streamed into one WAV with 0.18 s of silence inside a segment
@@ -263,21 +299,39 @@ The chapter MP3 and the chunk WAVs stay next to each other in `build/`.
 
 ## Measured on chapter 1
 
-Harness: MacBook Air M4, 16 GB, MLX 0.32.4, mlx-vlm 0.7.11.
+Harness: MacBook Air M4, 16 GB, MLX 0.32.4, mlx-vlm 0.7.11, mlx-audio 0.6.3.
 
-| metric | value |
-| --- | --- |
-| chapter | 1, pages 29–38 |
-| narrated segments | 78 (24 skipped) |
-| narrated words | 4,146 |
-| chunks | 97 |
-| audio duration | _pending_ |
-| generation time | _pending_ |
-| real-time factor | _pending_ |
-| peak MLX memory | _pending_ |
+| metric | LFM3-Audio-2B | Kokoro-82M |
+| --- | --- | --- |
+| chapter | 1, pages 29–38 | same `script.json` |
+| narrated segments | 78 (24 skipped) | same |
+| narrated words | 4,146 | same |
+| chunks | 97 | 97 |
+| audio duration | 26:38 | 26:24 |
+| generation time | 13:39 | 2:01 |
+| real-time factor | 1.90× | 12.8× |
+| peak MLX memory | 3.07 GB (load 2.33 GB) | 3.11 GB (load 0.33 GB) |
+| file | 96 kbps, 24 kHz mono, 18.3 MB | same, 18.1 MB |
 
-Quality checks (ASR round-trip, duration outliers, F0 drift) are reported in
-the milestone review.
+Both engines were run from the byte-identical `script.json` (sha256
+`f2a1eadb…`) with the default gaps, so the difference is the voice alone.
+
+Objective checks on the finished chapters:
+
+| metric | LFM3 | Kokoro |
+| --- | --- | --- |
+| median F0 | 180 Hz | 195 Hz |
+| F0 spread across chunks | 5.5% CV | 4.0% CV |
+| within-chunk F0 range | 48% of median | 46% |
+| pace | 15.2 chars/s (CV 18.1%) | 16.0 chars/s (CV 10.6%) |
+| edge silence | 180 ms lead / 120 ms trail | 120 / 120 ms |
+| integrated loudness | −21.6 LUFS | −26.3 LUFS |
+| true peak | +2.7 dBFS (clipped) | −2.1 dBFS |
+| ASR round-trip WER (4 chunks, LFM3 as recognizer) | 13.9% | 5.5% |
+
+The ASR test is biased toward LFM3's acoustics, so treat it as a check for
+dropped or repeated words rather than an absolute score: LFM3's worst chunk
+lost a whole clause, Kokoro's worst dropped a possessive.
 
 ## Tests
 
