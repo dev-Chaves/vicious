@@ -8,7 +8,13 @@ from typing import Optional
 import typer
 
 from .schema import SCHEMA_VERSION, Script, ScriptError
-from .tts import DEFAULT_MODEL, AudioCache, TTSSettings
+from .tts import (
+    DEFAULT_KOKORO_MODEL,
+    DEFAULT_MODEL,
+    AudioCache,
+    KokoroSettings,
+    TTSSettings,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -85,9 +91,20 @@ def speak(
     cache_dir: Path = typer.Option(
         Path(".cache/tts"), "--cache", help="Audio cache directory."
     ),
-    model: str = typer.Option(DEFAULT_MODEL, help="MLX TTS checkpoint."),
-    voice: str = typer.Option("female", help="female or male."),
-    language: str = typer.Option("American English", help="TTS voice locale."),
+    engine_name: str = typer.Option(
+        "lfm3", "--engine", help="Speech engine: lfm3 or kokoro."
+    ),
+    model: str = typer.Option(DEFAULT_MODEL, help="LFM3 MLX checkpoint."),
+    kokoro_model: str = typer.Option(
+        DEFAULT_KOKORO_MODEL, help="Kokoro MLX checkpoint."
+    ),
+    voice: str = typer.Option(
+        "", help="LFM3: female/male. Kokoro: af_heart, af_bella, am_michael..."
+    ),
+    speed: float = typer.Option(
+        1.0, "--speed", min=0.5, max=2.0, help="Kokoro speaking rate."
+    ),
+    language: str = typer.Option("American English", help="LFM3 TTS voice locale."),
     start: int = typer.Option(1, min=1, help="First chunk (1-based)."),
     limit: int = typer.Option(0, min=0, help="Synthesize only N chunks (0 = all)."),
     gap_within: float = typer.Option(
@@ -109,7 +126,13 @@ def speak(
     """Pass 2: chunk, synthesize, assemble. Reads only script.json."""
     from .assemble import assemble_mp3
     from .chunk import chunk_script
-    from .tts.lfm3 import LFM3Engine
+
+    engine_name = engine_name.strip().lower()
+    if engine_name not in ("lfm3", "kokoro"):
+        typer.echo(
+            f"error: unknown engine {engine_name!r} (use lfm3 or kokoro)", err=True
+        )
+        raise typer.Exit(code=1)
 
     try:
         loaded = Script.load(script_path)
@@ -137,14 +160,31 @@ def speak(
     work_dir = work or out.parent / f"{out.stem}.chunks"
     work_dir.mkdir(parents=True, exist_ok=True)
     cache = None if no_cache else AudioCache(cache_dir)
-    settings = TTSSettings(model_id=model, language=language, voice=voice)
-    engine = LFM3Engine(settings, cache=cache, refresh=refresh)
+    if engine_name == "kokoro":
+        from .tts.kokoro import KokoroEngine
+
+        kokoro_settings = KokoroSettings(
+            model_id=kokoro_model,
+            voice=voice or "af_heart",
+            speed=speed,
+        )
+        engine = KokoroEngine(kokoro_settings, cache=cache, refresh=refresh)
+        engine_label = f"kokoro {kokoro_settings.voice} at {speed:.2f}x"
+    else:
+        from .tts.lfm3 import LFM3Engine
+
+        settings = TTSSettings(
+            model_id=model, language=language, voice=voice or "female"
+        )
+        engine = LFM3Engine(settings, cache=cache, refresh=refresh)
+        engine_label = f"lfm3 {settings.voice}"
 
     typer.echo(f"{loaded.source.title}")
     typer.echo(
         f"  chunks      {len(selected)} of {len(chunks)} "
         f"(chars {min_chars}-{max_chars})"
     )
+    typer.echo(f"  engine      {engine_label}")
     typer.echo(f"  output      {out}")
     typer.echo(f"  work        {work_dir}\n")
 
