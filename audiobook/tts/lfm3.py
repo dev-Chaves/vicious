@@ -16,8 +16,6 @@ from ..wav import write_pcm16
 from .base import Synthesis, TTSSettings
 from .cache import AudioCache
 
-TTS_SYSTEM_PROMPT = "Perform TTS in {language} using a {voice} voice."
-
 
 class LFM3Engine:
     """Speech engine backed by ``LiquidAI/LFM3-Audio-2B`` (MLX)."""
