@@ -33,6 +33,8 @@ class KokoroSettings:
     voice: str = DEFAULT_VOICE
     speed: float = 1.0
     lang_code: str = "a"
+    edge_pad_ms: int = 120
+    silence_floor: float = 0.005
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -41,6 +43,8 @@ class KokoroSettings:
             "voice": self.voice,
             "speed": self.speed,
             "lang_code": self.lang_code,
+            "edge_pad_ms": self.edge_pad_ms,
+            "silence_floor": self.silence_floor,
         }
 
     def fingerprint(self) -> str:
@@ -136,6 +140,12 @@ class KokoroEngine:
 
         samples = np.concatenate([np.asarray(part.audio) for part in parts])
         sample_rate = int(parts[0].sample_rate or self.sample_rate)
+        samples = trim_edges(
+            samples,
+            sample_rate,
+            pad_ms=self.settings.edge_pad_ms,
+            floor=self.settings.silence_floor,
+        )
         write_pcm16(out_path, samples, sample_rate)
         duration = samples.size / sample_rate
         peak_memory = mx.get_peak_memory() / 1e9
@@ -167,6 +177,35 @@ class KokoroEngine:
                 },
             )
         return synthesis
+
+
+def trim_edges(
+    samples: np.ndarray,
+    sample_rate: int,
+    pad_ms: int = 120,
+    floor: float = 0.005,
+    window_ms: int = 10,
+) -> np.ndarray:
+    """Trim Kokoro's generous head/tail silence down to ``pad_ms``.
+
+    Kokoro pads every generation with roughly 300 ms of silence in front and
+    500 ms behind. Left alone, a chapter accumulates more than a minute of dead
+    air on top of the gaps the assembler already inserts. The assembler owns
+    pacing, so the engine only keeps a short, predictable pad.
+    """
+    window = max(1, int(sample_rate * window_ms / 1000))
+    frames = samples.size // window
+    if frames == 0 or not pad_ms >= 0:
+        return samples
+    blocks = samples[: frames * window].reshape(frames, window)
+    loud = np.sqrt(np.mean(blocks.astype(np.float64) ** 2, axis=1)) > floor
+    active = np.flatnonzero(loud)
+    if active.size == 0:
+        return samples
+    pad = int(sample_rate * pad_ms / 1000)
+    start = max(0, int(active[0]) * window - pad)
+    end = min(samples.size, (int(active[-1]) + 1) * window + pad)
+    return samples[start:end]
 
 
 def _quality_warnings(text: str, duration_s: float) -> list[str]:
