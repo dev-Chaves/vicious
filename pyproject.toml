@@ -9,6 +9,7 @@ dependencies = [
     "typer>=0.16",
     "mlx-vlm>=0.7.11",
     "numpy>=1.26",
+    "misaki[en]>=0.9.4",
 ]
 
 [project.scripts]
