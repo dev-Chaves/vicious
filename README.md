@@ -68,6 +68,12 @@ uv run python -m audiobook book "ebook-pdf/....pdf" --out build
 `book` writes `build/chNN/script.json`, `build/chNN/chNN.mp3`, a manifest at
 `build/book.json` and a single `build/book.mp3`.
 
+To listen in Apple Books (chapters, position memory, sleep timer):
+
+```bash
+uv run python -m audiobook export build/book.json -o build/book.m4b
+```
+
 `uv run audiobook ...` is equivalent once the environment is synced.
 
 ### Pass 1: `script`
@@ -409,6 +415,7 @@ cache for the first two chapters.
 | peak MLX memory | 3.19 GB |
 | loudness (book MP3) | −19.5 LUFS, −1.2 dBFS peak |
 | file | 755 MB, 96 kbps, 24 kHz mono |
+| m4b export | 34 chapters, 530.7 MB, AAC 64 kbps, chapter drift 0.000 s |
 | failed chapters | 0 |
 
 ASR round-trip on nine chunks from three chapters measured 6.5% mean WER
@@ -419,6 +426,22 @@ After the notation pass, the rewritten chunks were re-checked against their
 phonemes and transcripts: `less than one second`, `one kilobyte`,
 `ten milliseconds`, `one million dollars`, `nine hundred dollars` and
 `asterisk asterisk asterisk` are all present in the audio.
+
+### 9. Apple Books export (`audiobook/export.py`)
+
+`export` reads `book.json`, concatenates the chapter MP3s and re-encodes once
+into AAC inside an `.m4b`. Chapter markers come from the manifest durations and
+are written as an ffmpeg `;FFMETADATA1` chapter track, so Books shows all
+chapters and remembers the position. The file is tagged `genre=Audiobook`,
+`album`/`title` from the manifest and `+faststart`.
+
+```text
+audiobook export build/book.json [-o build/book.m4b] [--bitrate 64k]
+```
+
+At 64 kbps mono the 17.5 h book is about 500 MB. Apple Music is not a good fit
+for a single 17 h file: it has no chapter navigation and treats the book as
+music. Books is the native player for this format.
 
 ## Measured on chapter 1
 

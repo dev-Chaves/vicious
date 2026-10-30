@@ -370,6 +370,38 @@ def book(
         typer.echo(f"  book mp3    {result.book_mp3}")
 
 
+@app.command()
+def export(
+    manifest: Path = typer.Argument(
+        ..., exists=True, readable=True, help="book.json from a finished run."
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        "-o",
+        help="Output .m4b (default: book.m4b next to the manifest).",
+    ),
+    bitrate: str = typer.Option("64k", help="AAC bitrate for the audiobook."),
+) -> None:
+    """Package a finished book as a chaptered .m4b for Apple Books."""
+    from .export import export_m4b
+
+    target = out or manifest.parent / "book.m4b"
+    typer.echo(f"Encoding {target} (AAC {bitrate}, mono, one pass)...")
+    try:
+        result = export_m4b(manifest, target, bitrate=bitrate)
+    except (FileNotFoundError, ValueError, RuntimeError) as error:
+        typer.echo(f"error: {error}", err=True)
+        raise typer.Exit(code=1) from error
+
+    typer.echo("\nDone.")
+    typer.echo(f"  chapters    {result.chapters}")
+    typer.echo(f"  duration    {_clock(result.duration_s)}")
+    typer.echo(f"  size        {_size(result.size_bytes)}")
+    typer.echo(f"  file        {result.m4b}")
+    typer.echo("\nDrag it into Apple Books (Audiobooks) or sync it to the iPhone.")
+
+
 @cache_app.command("gc")
 def cache_gc(
     scripts: Optional[list[Path]] = typer.Option(
