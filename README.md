@@ -6,6 +6,7 @@ Two passes with a reviewable script in between:
 ```text
 PDF → extract → classify → clean → script.json      (pass 1, text)
 script.json → chunk → TTS → assemble → mp3          (pass 2, audio)
+PDF → pass 1 + pass 2 per chapter → book.json + book.mp3   (whole book)
 ```
 
 Pass 1 is fast and deterministic; pass 2 is slow and stochastic. Keeping them
@@ -115,9 +116,12 @@ text. Editing a segment in `script.json` invalidates only the affected chunks.
 Tuning the voice or the chunker leaves old entries behind; prune them with:
 
 ```bash
-uv run python -m audiobook cache gc -s build/ch*/script.json --dry-run
-uv run python -m audiobook cache gc -s build/ch*/script.json
+uv run python -m audiobook cache gc --dry-run
+uv run python -m audiobook cache gc
 ```
+
+With no `--scripts`, `gc` uses every `build/ch*/script.json`. Pass `-s PATH`
+once per script when the scripts live somewhere else.
 
 ### Whole book: `book`
 
@@ -256,6 +260,13 @@ Speech normalization (examples):
 | `https://example.com/sre-guide` | `example dot com slash sre guide` |
 | `snake_case` | `snake case` |
 | `e.g.` | `for example` |
+| `$1M`, `$440M` | `one million dollars`, `four hundred forty million dollars` |
+| `10 ms`, `1 kB`, `300 MB/s` | `ten milliseconds`, `one kilobyte`, `three hundred megabytes per second` |
+| `< 1 s`, `> five` | `less than one second`, `greater than five` |
+| `→`, `×`, `*` | `to`, `times`, `times` |
+| `* * *` (crontab) | `asterisk asterisk asterisk` |
+| `name=value` | `name equals value` |
+| `~800` | `about eight hundred` |
 
 ### 4. Narrate (`audiobook/narrate.py`)
 
@@ -280,7 +291,9 @@ tails are merged. Chunk ids are `segment-id-cNNNN`, stable across runs.
 
 Two engines implement the same `TTSEngine` contract (`load`, `close`,
 `synthesize`, `load_peak_memory_gb`), so chunking, caching, warning checks and
-assembly are shared. Both write 24 kHz mono 16-bit PCM.
+assembly are shared. Both write 24 kHz mono 16-bit PCM. `pipeline.run_speak()`
+is pass 2 as a plain function: `speak` and `book` both call it, and the engine
+is injected so tests can run without a model.
 
 #### Kokoro-82M (default)
 
@@ -358,6 +371,55 @@ and LFM3 clipped at +2.7 dBTP. `--no-normalize` keeps the engine's own level.
 
 The chapter MP3 and the chunk WAVs stay next to each other in `build/`.
 
+### 8. Whole book (`audiobook/book.py`)
+
+`book` is an orchestrator, not a third pass: for each chapter it runs pass 1 and
+pass 2 exactly as above, but in one process. It keeps a single engine instance,
+rebuilds `script.json` only when the text changed, skips chapters whose MP3
+exists, and writes `book.json` after every chapter. Failures are recorded per
+chapter and do not abort the run. At the end the chapter MP3s are concatenated
+with `-c copy` into `book.mp3`.
+
+```json
+{
+  "version": 1,
+  "book": "Site Reliability Engineering",
+  "engine": {"name": "kokoro", "voice": "af_heart", "speed": 1.0},
+  "chapters": [
+    {"number": 1, "status": "done", "chunks": 97, "duration_s": 1583.5,
+     "loudness_lufs": -19.4, "true_peak_dbtp": -2.2, "warnings": 0}
+  ]
+}
+```
+
+## Measured on the whole book
+
+Harness: MacBook Air M4, 16 GB, Kokoro `af_heart`, single-pass loudnorm, warm
+cache for the first two chapters.
+
+| metric | value |
+| --- | --- |
+| chapters | 34 |
+| narrated segments / words | 5,089 / 163,145 |
+| chunks | 4,393 |
+| audio | 17:28:56 (17.48 h) |
+| generation | 1:24:06 |
+| active wall clock | 1:48:45 |
+| real-time factor | 12.5× |
+| peak MLX memory | 3.19 GB |
+| loudness (book MP3) | −19.5 LUFS, −1.2 dBFS peak |
+| file | 755 MB, 96 kbps, 24 kHz mono |
+| failed chapters | 0 |
+
+ASR round-trip on nine chunks from three chapters measured 6.5% mean WER
+(worst 13.5%); the differences were numeric formatting (`700 petabytes` versus
+`seven hundred petabytes`, `sre` versus `s r e`), not lost or repeated words.
+
+After the notation pass, the rewritten chunks were re-checked against their
+phonemes and transcripts: `less than one second`, `one kilobyte`,
+`ten milliseconds`, `one million dollars`, `nine hundred dollars` and
+`asterisk asterisk asterisk` are all present in the audio.
+
 ## Measured on chapter 1
 
 Harness: MacBook Air M4, 16 GB, MLX 0.32.4, mlx-vlm 0.7.11, mlx-audio 0.6.3.
@@ -414,6 +476,8 @@ The sample PDF is not committed; integration tests are skipped when
 - Code and figures are announced, not described: `see the book` is the rule
   announcement. An LLM narrator can fill this in later.
 - Tables are announced and their captions read; rows are not.
+- Formulas and layout-dependent fractions are announced approximately (`slash`,
+  `equals`, `plus`); they are not reconstructed.
 - Footnotes are skipped, not read.
 - Speech is deterministic with Kokoro but sampled at temperature 1.0 with LFM3,
   whose voice can drift slightly between chunks. The cache makes it cheap to

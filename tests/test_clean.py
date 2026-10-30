@@ -207,3 +207,45 @@ def test_ensure_sentence():
     assert ensure_sentence('the "ops."') == 'the "ops."'
     assert ensure_sentence("(see above)") == "(see above)."
     assert ensure_sentence("") == ""
+
+
+# ---------------------------------------------------------------------------
+# Speech normalization: notation (currency, units, comparisons, symbols)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Service revenue: $1M.", "Service revenue: one million dollars."),
+        ("a loss of $440M", "a loss of four hundred forty million dollars"),
+        ("costs $1", "costs one dollar"),
+        ("costs $900", "costs nine hundred dollars"),
+        ("served in 10 ms", "served in ten milliseconds"),
+        ("complete in 1 s", "complete in one second"),
+        ("1 kB of data", "one kilobyte of data"),
+        ("300 MB/s", "three hundred megabytes per second"),
+        ("complete in < 1 s", "complete in less than one second"),
+        ("tickets < five", "tickets less than five"),
+        ("handle ~800 connections", "handle about eight hundred connections"),
+        ("name=value", "name equals value"),
+        ("availability = uptime", "availability equals uptime"),
+        ("two * accepts", "two times accepts"),
+        ("(i % four)", "(i modulo four)"),
+        ("percent \u2192 next", "percent to next"),
+        ("count \u00d7 i", "count times i"),
+        ("placeholder <cluster>", "placeholder <cluster>"),
+    ],
+)
+def test_notation(text, expected):
+    assert normalize_for_speech(text) == expected
+
+
+def test_star_runs_are_wildcards_not_multiplication():
+    assert (
+        normalize_for_speech('specification of "zero zero * * *"')
+        == 'specification of "zero zero asterisk asterisk asterisk"'
+    )
+    assert normalize_for_speech("fifty QPS * one hundred seconds") == (
+        "fifty Q P S times one hundred seconds"
+    )

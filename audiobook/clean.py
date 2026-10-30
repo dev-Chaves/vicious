@@ -311,6 +311,7 @@ def normalize_for_speech(text: str) -> str:
     text = _CITATION_RE.sub("", text)
     text = _expand_abbreviations(text)
     text = _URL_RE.sub(lambda match: _verbalize_url(match.group(0)), text)
+    text = _expand_notation(text)
     text = _split_identifiers(text)
     text = _LABEL_RE.sub(
         lambda m: f"{m.group(1)} {m.group(2)} dash {m.group(3)}", text
@@ -319,6 +320,109 @@ def normalize_for_speech(text: str) -> str:
     text = _expand_numbers(text)
     text = _clean_punctuation(text)
     return text
+
+
+# ---------------------------------------------------------------------------
+# Notation: currency, units, comparisons and symbols
+# ---------------------------------------------------------------------------
+
+# The book mixes prose with tables, formulas and SRE notation. Raw symbols
+# either get dropped by the G2P or fall back to espeak with the wrong words
+# ("$1M" became "one dollar M", "< 1 s" became "one ess"), so they are spelled
+# out here, before acronym and number expansion.
+_NUMBER_TOKEN = r"(?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?"
+_NUMBER_WORDS = (
+    "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    "thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    "twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|"
+    "hundred|thousand|million|billion|trillion"
+)
+_MAGNITUDES = {"K": "thousand", "M": "million", "B": "billion", "T": "trillion"}
+
+_CURRENCY_MAGNITUDE_RE = re.compile(rf"\$\s?({_NUMBER_TOKEN})\s*([KMBT])\b")
+_CURRENCY_RE = re.compile(rf"\$\s?({_NUMBER_TOKEN})\b")
+_PER_SECOND_RE = re.compile(
+    rf"(?<![\w.])({_NUMBER_TOKEN})\s?(kB|KB|MB|GB|TB|PB|ms|s)/s\b"
+)
+_UNIT_RE = re.compile(
+    rf"(?<![\w.])({_NUMBER_TOKEN})\s?(kB|KB|MB|GB|TB|PB|kbps|Mbps|ms)\b"
+)
+# A single-letter unit is only a unit with a space: ``500s`` is an HTTP status.
+_UNIT_SINGLE_RE = re.compile(rf"(?<![\w.])({_NUMBER_TOKEN})\s+(s|m|h)\b")
+_COMPARISON_RE = re.compile(
+    rf"(?<![\w])(<=|>=|<|>)\s+(?=(?:\d[\d,.]*|{_NUMBER_WORDS})\b)"
+)
+_TILDE_RE = re.compile(rf"~\s*(?=(?:\d[\d,.]*|{_NUMBER_WORDS})\b)")
+_MODULO_RE = re.compile(r"\b([A-Za-z])\s*%\s*(?=[A-Za-z])")
+
+_UNIT_WORDS = {
+    "ms": ("millisecond", "milliseconds"),
+    "s": ("second", "seconds"),
+    "m": ("minute", "minutes"),
+    "h": ("hour", "hours"),
+    "kB": ("kilobyte", "kilobytes"),
+    "KB": ("kilobyte", "kilobytes"),
+    "MB": ("megabyte", "megabytes"),
+    "GB": ("gigabyte", "gigabytes"),
+    "TB": ("terabyte", "terabytes"),
+    "PB": ("petabyte", "petabytes"),
+    "kbps": ("kilobit per second", "kilobits per second"),
+    "Mbps": ("megabit per second", "megabits per second"),
+}
+_COMPARISONS = {
+    "<": "less than",
+    ">": "greater than",
+    "<=": "less than or equal to",
+    ">=": "greater than or equal to",
+}
+
+
+def _expand_notation(text: str) -> str:
+    text = text.replace("\u2192", " to ")
+    text = text.replace("\u00d7", " times ")
+    # A run of stars is a wildcard (crontab, glob), not multiplication.
+    text = re.sub(
+        r"\*(?:\s*\*)+",
+        lambda m: " ".join(["asterisk"] * m.group(0).count("*")),
+        text,
+    )
+    text = re.sub(r"\s*\*\s*", " times ", text)
+    text = _CURRENCY_MAGNITUDE_RE.sub(_currency, text)
+    text = _CURRENCY_RE.sub(_currency, text)
+    text = _PER_SECOND_RE.sub(_per_second, text)
+    text = _UNIT_RE.sub(_unit, text)
+    text = _UNIT_SINGLE_RE.sub(_unit, text)
+    text = _COMPARISON_RE.sub(lambda m: _COMPARISONS[m.group(1)] + " ", text)
+    text = _TILDE_RE.sub("about ", text)
+    text = _MODULO_RE.sub(r"\1 modulo ", text)
+    text = re.sub(r"(?<![=<>!])\s*=\s*(?!=)", " equals ", text)
+    return text
+
+
+def _currency(match: re.Match[str]) -> str:
+    amount = match.group(1)
+    words = _number_phrase(amount)
+    if match.lastindex and match.lastindex >= 2:
+        words += " " + _MAGNITUDES[match.group(2)]
+        return f"{words} dollars"
+    unit = "dollar" if _is_one(amount) else "dollars"
+    return f"{words} {unit}"
+
+
+def _per_second(match: re.Match[str]) -> str:
+    number, unit = match.group(1), match.group(2)
+    singular, plural = _UNIT_WORDS[unit]
+    return f"{number} {singular if _is_one(number) else plural} per second"
+
+
+def _unit(match: re.Match[str]) -> str:
+    number, unit = match.group(1), match.group(2)
+    singular, plural = _UNIT_WORDS[unit]
+    return f"{number} {singular if _is_one(number) else plural}"
+
+
+def _is_one(number: str) -> bool:
+    return number.replace(",", "") == "1"
 
 
 def ensure_sentence(text: str) -> str:
